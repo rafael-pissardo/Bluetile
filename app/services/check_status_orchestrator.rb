@@ -46,17 +46,17 @@ class CheckStatusOrchestrator
 
     country_result = @country_check.call(country: context.country)
     metadata[:country] = country_result.metadata[:country]
-    return ["banned", metadata] if country_result.banned?
+    return [ "banned", metadata ] if country_result.banned?
 
     rooted_result = @rooted_check.call(rooted_device: context.rooted_device)
-    return ["banned", metadata] if rooted_result.banned?
+    return [ "banned", metadata ] if rooted_result.banned?
 
     vpn_result = @vpn_check.call(ip: context.ip)
     metadata[:proxy] = vpn_result.metadata[:proxy]
     metadata[:vpn] = vpn_result.metadata[:vpn]
-    return ["banned", metadata] if vpn_result.banned?
+    return [ "banned", metadata ] if vpn_result.banned?
 
-    ["not_banned", metadata]
+    [ "not_banned", metadata ]
   end
 
   def build_log_event(context, ban_status, metadata)
