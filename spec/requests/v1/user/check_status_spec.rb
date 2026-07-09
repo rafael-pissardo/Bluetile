@@ -46,6 +46,8 @@ RSpec.describe "POST /v1/user/check_status", type: :request do
       expect(log.ban_status).to eq("not_banned")
       expect(log.country).to eq("US")
       expect(log.rooted_device).to be(false)
+      expect(log.ip).to be_present
+      expect(log.created_at).to be_present
     end
   end
 
@@ -113,6 +115,8 @@ RSpec.describe "POST /v1/user/check_status", type: :request do
       expect {
         post_check_status(idfa: idfa, rooted_device: false)
       }.not_to change(IntegrityLog, :count)
+
+      expect(User.where(idfa: idfa).count).to eq(1)
     end
   end
 
