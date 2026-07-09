@@ -5,7 +5,8 @@ RSpec.describe "POST /v1/user/check_status", type: :request do
   let(:headers) do
     {
       "CONTENT_TYPE" => "application/json",
-      "CF-IPCountry" => "US"
+      "CF-IPCountry" => "US",
+      "X-API-Key" => "test-api-key"
     }
   end
 
@@ -13,20 +14,66 @@ RSpec.describe "POST /v1/user/check_status", type: :request do
     post "/v1/user/check_status", params: body.to_json, headers: headers.merge(extra_headers)
   end
 
-  def stub_vpnapi(ip:, vpn: false, tor: false, proxy: false, status: 200)
-    stub_request(:get, "https://vpnapi.io/api/#{ip}")
+  def stub_vpnapi(ip:, vpn: false, tor: false, proxy: false, status: 200, timeout: false)
+    request_stub = stub_request(:get, "https://vpnapi.io/api/#{ip}")
       .with(query: hash_including("key" => "test-key"))
-      .to_return(
+
+    if timeout
+      request_stub.to_timeout
+    else
+      request_stub.to_return(
         status: status,
         body: {
           ip: ip,
           security: { vpn: vpn, tor: tor, proxy: proxy, relay: false }
         }.to_json
       )
+    end
   end
 
   before do
     stub_vpnapi(ip: "127.0.0.1")
+  end
+
+  describe "authentication" do
+    it "returns 401 without API key" do
+      post "/v1/user/check_status",
+           params: { idfa: idfa, rooted_device: false }.to_json,
+           headers: headers.except("X-API-Key")
+
+      expect(response).to have_http_status(:unauthorized)
+    end
+
+    it "returns 401 with invalid API key" do
+      post_check_status({ idfa: idfa, rooted_device: false }, "X-API-Key" => "wrong")
+
+      expect(response).to have_http_status(:unauthorized)
+    end
+  end
+
+  describe "rate limiting" do
+    around do |example|
+      Rack::Attack.enabled = true
+      Rack::Attack.reset!
+      example.run
+      Rack::Attack.reset!
+      Rack::Attack.enabled = false
+    end
+
+    before do
+      Rack::Attack.cache.store.clear
+      Rack::Attack.throttles.delete("check_status/ip")
+      Rack::Attack.throttle("check_status/ip", limit: 2, period: 1.minute) do |req|
+        req.ip if req.post? && req.path == "/v1/user/check_status"
+      end
+    end
+
+    it "returns 429 when limit exceeded" do
+      2.times { post_check_status(idfa: SecureRandom.uuid, rooted_device: false) }
+      post_check_status(idfa: SecureRandom.uuid, rooted_device: false)
+
+      expect(response).to have_http_status(:too_many_requests)
+    end
   end
 
   describe "happy path" do
@@ -67,10 +114,11 @@ RSpec.describe "POST /v1/user/check_status", type: :request do
       expect(response.parsed_body).to eq("ban_status" => "banned")
     end
 
-    it "bans when rooted_device is true" do
+    it "bans when rooted_device is true without calling VPNAPI" do
       post_check_status(idfa: idfa, rooted_device: true)
 
       expect(response.parsed_body).to eq("ban_status" => "banned")
+      expect(a_request(:get, %r{https://vpnapi.io/api/})).not_to have_been_made
     end
 
     it "bans when VPNAPI reports vpn" do
@@ -155,7 +203,9 @@ RSpec.describe "POST /v1/user/check_status", type: :request do
     end
 
     it "returns 400 for missing Content-Type" do
-      post "/v1/user/check_status", params: { idfa: idfa, rooted_device: false }.to_json
+      post "/v1/user/check_status",
+           params: { idfa: idfa, rooted_device: false }.to_json,
+           headers: headers.except("CONTENT_TYPE")
 
       expect(response).to have_http_status(:bad_request)
     end
@@ -176,6 +226,25 @@ RSpec.describe "POST /v1/user/check_status", type: :request do
       post_check_status(idfa: SecureRandom.uuid, rooted_device: false)
 
       expect(response.parsed_body).to eq("ban_status" => "not_banned")
+    end
+
+    it "returns not_banned when VPNAPI times out" do
+      stub_vpnapi(ip: "127.0.0.1", timeout: true)
+
+      post_check_status(idfa: SecureRandom.uuid, rooted_device: false)
+
+      expect(response.parsed_body).to eq("ban_status" => "not_banned")
+    end
+  end
+
+  describe "redis unavailable" do
+    it "returns 500 when redis is down" do
+      allow(REDIS).to receive(:sismember).and_raise(Infrastructure::RedisUnavailableError, "connection refused")
+
+      post_check_status(idfa: SecureRandom.uuid, rooted_device: false)
+
+      expect(response).to have_http_status(:internal_server_error)
+      expect(response.parsed_body).to eq("error" => "Internal Server Error")
     end
   end
 end

@@ -15,6 +15,5 @@ RSpec.configure do |config|
   config.before do
     flush_redis!
     seed_country_whitelist("US", "CA")
-    ENV["VPNAPI_KEY"] = "test-key"
   end
 end
