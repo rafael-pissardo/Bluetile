@@ -18,12 +18,16 @@ class CheckStatusOrchestrator
     return "banned" if user&.banned?
 
     ban_status, metadata = run_checks(context)
-    log_event(user, context, ban_status, metadata)
+    should_log = user.nil? || user.ban_status != ban_status
 
-    if user
-      user.update!(ban_status: ban_status) if user.ban_status != ban_status
-    else
-      User.create!(idfa: context.idfa, ban_status: ban_status)
+    ActiveRecord::Base.transaction do
+      if user
+        user.update!(ban_status: ban_status) if user.ban_status != ban_status
+      else
+        User.create!(idfa: context.idfa, ban_status: ban_status)
+      end
+
+      @logger.log(build_log_event(context, ban_status, metadata)) if should_log
     end
 
     ban_status
@@ -53,14 +57,6 @@ class CheckStatusOrchestrator
     return ["banned", metadata] if vpn_result.banned?
 
     ["not_banned", metadata]
-  end
-
-  def log_event(user, context, ban_status, metadata)
-    if user.nil?
-      @logger.log(build_log_event(context, ban_status, metadata))
-    elsif user.ban_status != ban_status
-      @logger.log(build_log_event(context, ban_status, metadata))
-    end
   end
 
   def build_log_event(context, ban_status, metadata)
