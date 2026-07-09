@@ -60,40 +60,431 @@ bundle exec rails db:create db:migrate db:seed
 | **Body** | `{ "idfa": "<uuid>", "rooted_device": <boolean> }` |
 | **Success** | `200` → `{ "ban_status": "not_banned" \| "banned" }` |
 
-**Example — clean user**
+**Whitelisted countries** (Redis seed): `US`, `CA`, `GB`
+
+**Base request** — reuse in the examples below:
 
 ```bash
-curl -X POST http://localhost:3000/v1/user/check_status \
+export API_KEY=your_api_key_here
+export BASE=http://localhost:3000
+export IDFA=8264148c-be95-4b2b-b260-6ee98dd53bf6
+```
+
+```bash
+curl -s -X POST "$BASE/v1/user/check_status" \
   -H "Content-Type: application/json" \
   -H "X-API-Key: $API_KEY" \
   -H "CF-IPCountry: US" \
-  -d '{"idfa":"8264148c-be95-4b2b-b260-6ee98dd53bf6","rooted_device":false}'
+  -d "{\"idfa\":\"$IDFA\",\"rooted_device\":false}"
+```
+
+---
+
+## API scenarios
+
+All examples assume the server is running (`bundle exec rails server`) and infrastructure is up (`docker compose up -d`).
+
+### Success — clean user (`200`)
+
+All checks pass: whitelisted country, device not rooted, VPNAPI reports no VPN/Tor.
+
+```bash
+curl -s -X POST "$BASE/v1/user/check_status" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $API_KEY" \
+  -H "CF-IPCountry: US" \
+  -d "{\"idfa\":\"$IDFA\",\"rooted_device\":false}"
 ```
 
 ```json
 { "ban_status": "not_banned" }
 ```
 
-**Example — banned (rooted device)**
+**Side effects:** creates `User` + `IntegrityLog` on first request for this IDFA.
+
+---
+
+### Ban — country not whitelisted (`200`)
+
+Country code not in Redis set. Chain stops **before** VPNAPI.
 
 ```bash
-curl -X POST http://localhost:3000/v1/user/check_status \
+curl -s -X POST "$BASE/v1/user/check_status" \
   -H "Content-Type: application/json" \
   -H "X-API-Key: $API_KEY" \
-  -H "CF-IPCountry: US" \
-  -d '{"idfa":"8264148c-be95-4b2b-b260-6ee98dd53bf6","rooted_device":true}'
+  -H "CF-IPCountry: XX" \
+  -d "{\"idfa\":\"$(uuidgen)\",\"rooted_device\":false}"
 ```
 
 ```json
 { "ban_status": "banned" }
 ```
 
-### Health (no auth)
+Use a fresh IDFA per run (`uuidgen`) to see user creation + log on first hit.
 
-| Endpoint | Purpose |
-|----------|---------|
-| `GET /health` | Liveness |
-| `GET /health/deep` | Postgres + Redis connectivity |
+---
+
+### Ban — missing `CF-IPCountry` header (`200`)
+
+Treated as not whitelisted → banned.
+
+```bash
+curl -s -X POST "$BASE/v1/user/check_status" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $API_KEY" \
+  -d "{\"idfa\":\"$(uuidgen)\",\"rooted_device\":false}"
+```
+
+```json
+{ "ban_status": "banned" }
+```
+
+---
+
+### Ban — rooted / jailbroken device (`200`)
+
+Root check runs after country. VPNAPI is **not** called.
+
+```bash
+curl -s -X POST "$BASE/v1/user/check_status" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $API_KEY" \
+  -H "CF-IPCountry: US" \
+  -d "{\"idfa\":\"$IDFA\",\"rooted_device\":true}"
+```
+
+```json
+{ "ban_status": "banned" }
+```
+
+---
+
+### Ban — VPN detected (`200`)
+
+Only evaluated when country + rooted checks pass. Requires `VPNAPI_KEY` in `.env`. VPNAPI flags the **client IP** (`security.vpn: true`).
+
+```bash
+curl -s -X POST "$BASE/v1/user/check_status" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $API_KEY" \
+  -H "CF-IPCountry: US" \
+  -d "{\"idfa\":\"$(uuidgen)\",\"rooted_device\":false}"
+```
+
+```json
+{ "ban_status": "banned" }
+```
+
+> In local dev the client IP is typically `127.0.0.1`. Whether this triggers a VPN ban depends on VPNAPI's response for that IP. The test suite stubs VPNAPI to verify this path.
+
+---
+
+### Ban — Tor detected (`200`)
+
+Same flow as VPN; VPNAPI returns `security.tor: true`.
+
+```json
+{ "ban_status": "banned" }
+```
+
+> Like VPN, Tor detection depends on VPNAPI's evaluation of the client IP in production. Cached in Redis for 24h per IP.
+
+---
+
+### Already banned user — short-circuit (`200`)
+
+User exists with `ban_status: banned`. Check chain is **skipped**; no VPNAPI call; **no new** integrity log.
+
+```bash
+# First request — ban the user (e.g. rooted)
+curl -s -X POST "$BASE/v1/user/check_status" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $API_KEY" \
+  -H "CF-IPCountry: US" \
+  -d "{\"idfa\":\"$IDFA\",\"rooted_device\":true}"
+
+# Second request — same IDFA, clean signals, still banned
+curl -s -X POST "$BASE/v1/user/check_status" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $API_KEY" \
+  -H "CF-IPCountry: US" \
+  -d "{\"idfa\":\"$IDFA\",\"rooted_device\":false}"
+```
+
+```json
+{ "ban_status": "banned" }
+```
+
+---
+
+### Status change — `not_banned` → `banned` (`200`)
+
+Existing user re-checked; status changes → new `IntegrityLog` entry.
+
+```bash
+# 1) Create clean user
+curl -s -X POST "$BASE/v1/user/check_status" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $API_KEY" \
+  -H "CF-IPCountry: US" \
+  -d "{\"idfa\":\"$IDFA\",\"rooted_device\":false}"
+
+# 2) Same IDFA, now rooted → banned + new log
+curl -s -X POST "$BASE/v1/user/check_status" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $API_KEY" \
+  -H "CF-IPCountry: US" \
+  -d "{\"idfa\":\"$IDFA\",\"rooted_device\":true}"
+```
+
+```json
+{ "ban_status": "banned" }
+```
+
+---
+
+### Re-check — status unchanged (`200`)
+
+Existing `not_banned` user, all checks still pass → **no new** integrity log.
+
+```bash
+# Run the clean-user request twice with the same IDFA
+curl -s -X POST "$BASE/v1/user/check_status" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $API_KEY" \
+  -H "CF-IPCountry: US" \
+  -d "{\"idfa\":\"$IDFA\",\"rooted_device\":false}"
+```
+
+```json
+{ "ban_status": "not_banned" }
+```
+
+---
+
+### VPNAPI fail-open (`200`)
+
+When VPNAPI returns **5xx**, **429**, or **times out**, the check **passes** — user is not banned solely because the external API failed.
+
+```json
+{ "ban_status": "not_banned" }
+```
+
+| VPNAPI condition | Ban? | Rationale |
+|------------------|------|-----------|
+| HTTP 500 | No | Fail-open |
+| HTTP 429 | No | Fail-open |
+| Timeout (> `VPNAPI_TIMEOUT_MS`) | No | Fail-open |
+| HTTP 200, clean | No | Normal pass |
+| HTTP 200, vpn/tor true | Yes | Normal ban |
+
+> Fail-open is verified in the test suite via WebMock stubs. Reproducing it manually requires VPNAPI to be unreachable or misconfigured.
+
+---
+
+### Authentication errors
+
+#### Missing API key (`401`)
+
+```bash
+curl -s -X POST "$BASE/v1/user/check_status" \
+  -H "Content-Type: application/json" \
+  -H "CF-IPCountry: US" \
+  -d "{\"idfa\":\"$IDFA\",\"rooted_device\":false}"
+```
+
+```json
+{ "error": "Unauthorized" }
+```
+
+#### Invalid API key (`401`)
+
+```bash
+curl -s -X POST "$BASE/v1/user/check_status" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: wrong-key" \
+  -H "CF-IPCountry: US" \
+  -d "{\"idfa\":\"$IDFA\",\"rooted_device\":false}"
+```
+
+```json
+{ "error": "Unauthorized" }
+```
+
+---
+
+### Rate limiting (`429`)
+
+Default: **60 requests/minute per IP** on `POST /v1/user/check_status` (configurable via `RATE_LIMIT_PER_MINUTE`).
+
+After exceeding the limit:
+
+```json
+{ "error": "Too Many Requests" }
+```
+
+```bash
+# Quick stress (will hit 429 after the configured limit)
+for i in $(seq 1 65); do
+  curl -s -o /dev/null -w "%{http_code}\n" -X POST "$BASE/v1/user/check_status" \
+    -H "Content-Type: application/json" \
+    -H "X-API-Key: $API_KEY" \
+    -H "CF-IPCountry: US" \
+    -d "{\"idfa\":\"$(uuidgen)\",\"rooted_device\":false}"
+done
+```
+
+---
+
+### Validation errors
+
+#### Missing `idfa` (`400`)
+
+```bash
+curl -s -X POST "$BASE/v1/user/check_status" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $API_KEY" \
+  -H "CF-IPCountry: US" \
+  -d '{"rooted_device":false}'
+```
+
+```json
+{ "error": "Bad Request" }
+```
+
+#### Missing `rooted_device` (`400`)
+
+```bash
+curl -s -X POST "$BASE/v1/user/check_status" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $API_KEY" \
+  -H "CF-IPCountry: US" \
+  -d "{\"idfa\":\"$IDFA\"}"
+```
+
+```json
+{ "error": "Bad Request" }
+```
+
+#### Malformed JSON (`400`)
+
+```bash
+curl -s -X POST "$BASE/v1/user/check_status" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $API_KEY" \
+  -H "CF-IPCountry: US" \
+  -d '{'
+```
+
+```json
+{ "error": "Bad Request" }
+```
+
+#### Missing `Content-Type: application/json` (`400`)
+
+```bash
+curl -s -X POST "$BASE/v1/user/check_status" \
+  -H "X-API-Key: $API_KEY" \
+  -H "CF-IPCountry: US" \
+  -d "{\"idfa\":\"$IDFA\",\"rooted_device\":false}"
+```
+
+```json
+{ "error": "Bad Request" }
+```
+
+#### Invalid UUID (`422`)
+
+```bash
+curl -s -X POST "$BASE/v1/user/check_status" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $API_KEY" \
+  -H "CF-IPCountry: US" \
+  -d '{"idfa":"not-a-uuid","rooted_device":false}'
+```
+
+```json
+{ "error": "Unprocessable Entity" }
+```
+
+#### Non-boolean `rooted_device` (`422`)
+
+```bash
+curl -s -X POST "$BASE/v1/user/check_status" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $API_KEY" \
+  -H "CF-IPCountry: US" \
+  -d "{\"idfa\":\"$IDFA\",\"rooted_device\":\"yes\"}"
+```
+
+```json
+{ "error": "Unprocessable Entity" }
+```
+
+---
+
+### Infrastructure — Redis unavailable (`500`)
+
+When Redis is down, the API returns an error instead of silently degrading.
+
+```json
+{ "error": "Internal Server Error" }
+```
+
+> Stop Redis to observe: `docker compose stop redis`
+
+---
+
+### Health endpoints (no auth)
+
+#### Liveness
+
+```bash
+curl -s "$BASE/health"
+```
+
+```json
+{
+  "status": "ok",
+  "timestamp": "2026-07-09T12:00:00Z"
+}
+```
+
+#### Deep check — Postgres + Redis
+
+```bash
+curl -s "$BASE/health/deep"
+```
+
+```json
+{
+  "status": "healthy",
+  "checks": { "postgres": true, "redis": true },
+  "timestamp": "2026-07-09T12:00:00Z"
+}
+```
+
+Returns `503` with `"status": "degraded"` when a dependency is down.
+
+---
+
+## Scenario summary
+
+| Scenario | HTTP | Response body | VPNAPI called? | DB log |
+|----------|------|---------------|----------------|--------|
+| Clean user | 200 | `not_banned` | Yes | Created |
+| Country not whitelisted | 200 | `banned` | No | Created/updated |
+| Missing `CF-IPCountry` | 200 | `banned` | No | Created/updated |
+| Rooted device | 200 | `banned` | No | Created/updated |
+| VPN / Tor detected | 200 | `banned` | Yes | Created/updated |
+| Already banned user | 200 | `banned` | No | None |
+| Status unchanged re-check | 200 | `not_banned` | Yes | None |
+| Status change | 200 | `banned` | Depends | New log |
+| VPNAPI fail-open | 200 | `not_banned` | Yes (failed) | Created/updated |
+| Missing/invalid API key | 401 | `Unauthorized` | No | None |
+| Rate limit exceeded | 429 | `Too Many Requests` | No | None |
+| Validation error | 400/422 | `Bad Request` / `Unprocessable Entity` | No | None |
+| Redis down | 500 | `Internal Server Error` | No | None |
 
 ---
 
