@@ -48,14 +48,17 @@ RSpec.describe "POST /v1/user/check_status", type: :request do
       expect(log.rooted_device).to be(false)
       expect(log.ip).to be_present
       expect(log.created_at).to be_present
+      expect(log.proxy).to be(false)
+      expect(log.vpn).to be(false)
     end
   end
 
   describe "ban triggers" do
-    it "bans when country is not whitelisted" do
+    it "bans when country is not whitelisted without calling VPNAPI" do
       post_check_status({ idfa: idfa, rooted_device: false }, "CF-IPCountry" => "XX")
 
       expect(response.parsed_body).to eq("ban_status" => "banned")
+      expect(a_request(:get, %r{https://vpnapi.io/api/})).not_to have_been_made
     end
 
     it "bans when CF-IPCountry header is missing" do
@@ -159,8 +162,16 @@ RSpec.describe "POST /v1/user/check_status", type: :request do
   end
 
   describe "VPNAPI fail-open" do
-    it "returns not_banned when VPNAPI fails" do
+    it "returns not_banned when VPNAPI fails with 500" do
       stub_vpnapi(ip: "127.0.0.1", status: 500)
+
+      post_check_status(idfa: SecureRandom.uuid, rooted_device: false)
+
+      expect(response.parsed_body).to eq("ban_status" => "not_banned")
+    end
+
+    it "returns not_banned when VPNAPI fails with 429" do
+      stub_vpnapi(ip: "127.0.0.1", status: 429)
 
       post_check_status(idfa: SecureRandom.uuid, rooted_device: false)
 
