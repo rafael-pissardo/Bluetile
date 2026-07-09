@@ -10,7 +10,7 @@ Rails 8.1 API-only application that evaluates user ban status via security check
 ## Setup
 
 ```bash
-cp .env.example .env   # add your VPNAPI_KEY
+cp .env.example .env   # set API_KEY and VPNAPI_KEY
 bin/setup --skip-server
 ```
 
@@ -31,13 +31,11 @@ bundle exec rails db:create db:migrate db:seed
 | `DATABASE_USERNAME` | `bluetile` | PostgreSQL user |
 | `DATABASE_PASSWORD` | `bluetile` | PostgreSQL password |
 | `REDIS_URL` | `redis://localhost:6379/0` | Redis connection |
-| `VPNAPI_KEY` | — | VPNAPI.io API key (required in development/production) |
+| `API_KEY` | — | Required `X-API-Key` header value |
+| `RATE_LIMIT_PER_MINUTE` | `60` | Per-IP limit for check_status |
+| `VPNAPI_KEY` | — | VPNAPI.io API key |
 
-## Seed country whitelist (Redis)
-
-```bash
-bundle exec rails runner "REDIS.sadd('country_whitelist', %w[US CA GB])"
-```
+**Redis unavailable:** returns `500 Internal Server Error`.
 
 ## Run
 
@@ -51,11 +49,25 @@ bundle exec rails server
 bundle exec rspec
 ```
 
+With coverage:
+
+```bash
+COVERAGE=true bundle exec rspec
+```
+
 ## API
+
+### Authentication
+
+All `/v1/*` endpoints require header:
+
+```
+X-API-Key: <API_KEY>
+```
 
 ### `POST /v1/user/check_status`
 
-**Headers:** `Content-Type: application/json`, `CF-IPCountry` (from Cloudflare)
+**Headers:** `Content-Type: application/json`, `CF-IPCountry`, `X-API-Key`
 
 **Request:**
 
@@ -74,6 +86,11 @@ bundle exec rspec
 }
 ```
 
+### Health
+
+- `GET /health` — liveness
+- `GET /health/deep` — postgres + redis checks
+
 ## Security checks (in order)
 
 1. Country whitelist (`CF-IPCountry` vs Redis set)
@@ -82,6 +99,12 @@ bundle exec rspec
 
 ## Architecture
 
-- `CheckStatusOrchestrator` — runs check chain, persists user, triggers logging
+- `CheckStatus::Handler` — request parsing, validation, orchestration entry
+- `CheckStatusOrchestrator` — check chain, persistence, logging
 - `IntegrityLogger` — swappable adapter (PostgreSQL default)
 - `Checks::*` — individual security check services
+- `RedisGateway` — Redis access with connection error handling
+
+## Operations
+
+See [docs/OPERATIONS.md](docs/OPERATIONS.md) for monitoring and rollback.
