@@ -10,9 +10,16 @@ Rails 8.1 API-only application that evaluates user ban status via security check
 ## Setup
 
 ```bash
+cp .env.example .env   # add your VPNAPI_KEY
+bin/setup --skip-server
+```
+
+Or manually:
+
+```bash
 docker compose up -d
 bundle install
-bundle exec rails db:create db:migrate
+bundle exec rails db:create db:migrate db:seed
 ```
 
 ## Environment

@@ -9,7 +9,17 @@
 | AD-003 | Already-banned user → no new integrity log | No state change |
 | AD-004 | VPNAPI fail-open on errors | Per PDF spec |
 | AD-005 | Fundamental RSpec only | Request specs + VpnApiCheck service spec |
+| AD-006 | PostgreSQL Docker port 5433 | Host 5432 already in use |
+| AD-007 | Cloudflare trusted_proxies | Correct client IP behind CF |
+| AD-008 | Orchestrator uses DB transaction | User + integrity log atomic |
 
 ## Handoff
 
-Feature: user-check-status — in progress (Execute phase)
+Feature **user-check-status** — **complete**.
+
+- All tasks T1–T7 done
+- 18 RSpec examples passing
+- Verifier: PASS (see `.specs/features/user-check-status/validation.md`)
+- Commits on `main`, ready for zip submission
+
+**Run tests:** `docker compose up -d && bundle exec rspec`
