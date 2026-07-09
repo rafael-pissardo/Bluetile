@@ -44,7 +44,7 @@ module CheckStatus
       if validation.errors.intersect?(%i[missing_idfa missing_rooted_device])
         Response.new(status: :bad_request, json: { error: "Bad Request" })
       else
-        Response.new(status: :unprocessable_entity, json: { error: "Unprocessable Entity" })
+        Response.new(status: :unprocessable_content, json: { error: "Unprocessable Entity" })
       end
     end
   end

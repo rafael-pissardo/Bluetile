@@ -175,7 +175,7 @@ RSpec.describe "POST /v1/user/check_status", type: :request do
     it "returns 422 for invalid UUID" do
       post_check_status(idfa: "not-a-uuid", rooted_device: false)
 
-      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content)
     end
 
     it "returns 400 for missing idfa" do
@@ -193,7 +193,7 @@ RSpec.describe "POST /v1/user/check_status", type: :request do
     it "returns 422 for non-boolean rooted_device" do
       post_check_status(idfa: idfa, rooted_device: "yes")
 
-      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content)
     end
 
     it "returns 400 for malformed JSON" do
