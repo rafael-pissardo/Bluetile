@@ -6,6 +6,10 @@
 
 /coverage
 
+# Local spec-driven artifacts and internal docs (not for submission).
+/.specs
+/docs
+
 # Ignore bundler config.
 /.bundle
 
