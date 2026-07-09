@@ -13,6 +13,8 @@ RSpec.describe Checks::VpnApiCheck do
   it "passes when VPNAPI returns an error (fail-open)" do
     allow(client).to receive(:lookup).with(ip).and_raise(VpnApiClient::Error, "VPNAPI returned 500")
 
+    expect(Rails.logger).to receive(:warn).with(/\[VpnApiCheck\] fail-open for ip=#{ip}/)
+
     result = check.call(ip: ip)
 
     expect(result.passed).to be(true)

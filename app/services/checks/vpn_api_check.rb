@@ -19,7 +19,8 @@ module Checks
         passed: !(vpn || tor),
         metadata: { proxy: proxy, vpn: vpn, tor: tor }
       )
-    rescue VpnApiClient::Error, Faraday::Error, JSON::ParserError
+    rescue VpnApiClient::Error, Faraday::Error, JSON::ParserError => e
+      Rails.logger.warn("[VpnApiCheck] fail-open for ip=#{ip}: #{e.class} #{e.message}")
       Result.new(passed: true, metadata: { proxy: nil, vpn: nil, tor: nil })
     end
 
