@@ -28,5 +28,5 @@ group :development, :test do
   gem "rspec-rails", "8.0.4"
   gem "factory_bot_rails", "6.5.1"
   gem "webmock", "3.26.2"
-  gem "simplecov", "0.22.0", require: false
+  gem "simplecov", "1.0.2", require: false
 end
